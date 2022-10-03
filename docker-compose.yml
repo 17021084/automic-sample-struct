@@ -1,0 +1,20 @@
+version: '3.3'
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: ./nginx.Dockerfile
+    ports:
+      - 80:80
+    links:
+      - web
+  web:
+    image: __REGISTRY_IMAGE__
+    stdin_open: true
+    tty: true
+    ports:
+      - 5050:5050
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
