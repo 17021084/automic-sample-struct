@@ -1,0 +1,158 @@
+image: ${CI_BASE_IMAGE}:latest
+
+stages:
+  - coding_convention
+  - build_staging
+  - deploy_staging
+  - clean_staging
+  - build_prod
+  - deploy_prod
+  - clean_prod
+
+coding_convention:
+  stage: coding_convention
+  script:
+    - yarn install
+    - yarn lint
+  when: always
+  except:
+    - staging
+    - master
+
+.docker_setup:
+  before_script:
+    - docker login -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}" ${CI_REGISTRY}
+
+.ssh_setup:
+  before_script:
+    - eval "$(ssh-agent -s)"
+    - ssh-add <(echo "${SSH_PRIVATE_KEY}" | base64 -d)
+
+.env_setup:
+  script:
+    - echo "${ENVIRONMENT_DATA}" >> .env
+
+.build_setup:
+  script:
+    - docker build -t "${REGISTRY_IMAGE}" .
+    - docker push "${REGISTRY_IMAGE}"
+    - echo "Registry image:" ${REGISTRY_IMAGE}
+
+.deployment_setup:
+  script:
+    - ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_IP} -p ${SERVER_PORT} mkdir -p "${WORKSPACE}"
+    - sed -i "s/__REGISTRY_IMAGE__/${REGISTRY_IMAGE}/" docker-compose.yml
+    - sed -i "s/__REGISTRY_IMAGE__/${REGISTRY_IMAGE}/" docker-compose.yml
+    - sed -i "s/__NGINX_DOMAIN__/${NGINX_DOMAIN}/" nginx.conf
+    - scp -o StrictHostKeyChecking=no -P ${SERVER_PORT} -r docker-compose.yml ${SERVER_USERNAME}@${SERVER_IP}:${WORKSPACE}/
+    - scp -o StrictHostKeyChecking=no -P ${SERVER_PORT} -r .env ${SERVER_USERNAME}@${SERVER_IP}:${WORKSPACE}/
+    - scp -o StrictHostKeyChecking=no -P ${SERVER_PORT} -r nginx.conf ${SERVER_USERNAME}@${SERVER_IP}:${WORKSPACE}/
+    - scp -o StrictHostKeyChecking=no -P ${SERVER_PORT} -r nginx.Dockerfile ${SERVER_USERNAME}@${SERVER_IP}:${WORKSPACE}/
+    - ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_IP} -p ${SERVER_PORT} "docker-compose -f ${WORKSPACE}/docker-compose.yml pull web"
+    - ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_IP} -p ${SERVER_PORT} "docker-compose -f ${WORKSPACE}/docker-compose.yml  up -d --build"
+
+.unused_script:
+  script:
+    - ssh -o StrictHostKeyChecking=no ${SERVER_USERNAME}@${SERVER_IP} -p ${SERVER_PORT} "docker system prune -a -f"
+
+build_staging:
+  stage: build_staging
+  image: docker:latest
+  variables:
+    REGISTRY_IMAGE: ${CI_REGISTRY_IMAGE}/staging
+    ENVIRONMENT_DATA: ${STAGING_ENVIRONMENT_DATA}
+  services:
+    - name: docker:19.03.8-dind
+  before_script:
+    - !reference [.docker_setup, before_script]
+  script:
+    - !reference [.env_setup, script]
+    - !reference [.build_setup, script]
+  when: on_success
+  only:
+    - staging
+
+deploy_staging:
+  stage: deploy_staging
+  image: kroniak/ssh-client
+  variables:
+    REGISTRY_IMAGE: ${STAGING_REGISTRY_IMAGE}
+    SERVER_IP: ${STAGING_IP_ADDRESS}
+    SERVER_USERNAME: ${STAGING_USERNAME}
+    SERVER_PORT: 2025
+    NGINX_DOMAIN: ${STAGING_NGINX_DOMAIN}
+    WORKSPACE: /home/${STAGING_USERNAME}/cotami-admin
+  before_script:
+    - !reference [.ssh_setup, before_script]
+  script:
+    - !reference [.env_setup, script]
+    - !reference [.deployment_setup, script]
+  when: on_success
+  only:
+    - staging
+
+clean_staging:
+  stage: clean_staging
+  image: kroniak/ssh-client
+  variables:
+    SERVER_IP: ${STAGING_IP_ADDRESS}
+    SERVER_USERNAME: ${STAGING_USERNAME}
+    SERVER_PORT: 2025
+  before_script:
+    - !reference [.ssh_setup, before_script]
+  script:
+    - !reference [.unused_script, script]
+  when: on_success
+  only:
+    - staging
+
+build_prod:
+  stage: build_prod
+  image: docker:latest
+  variables:
+    REGISTRY_IMAGE: ${CI_REGISTRY_IMAGE}
+    ENVIRONMENT_DATA: ${PROD_ENVIRONMENT_DATA}
+  services:
+    - name: docker:19.03.8-dind
+  before_script:
+    - !reference [.docker_setup, before_script]
+  script:
+    - !reference [.env_setup, script]
+    - !reference [.build_setup, script]
+  when: on_success
+  only:
+    - master
+
+deploy_prod:
+  stage: deploy_prod
+  image: kroniak/ssh-client
+  variables:
+    REGISTRY_IMAGE: ${PROD_REGISTRY_IMAGE}
+    SERVER_IP: ${FRONTEND_PROD_IP}
+    SERVER_USERNAME: ${PROD_USERNAME}
+    SERVER_PORT: 22
+    NGINX_DOMAIN: ${PROD_NGINX_DOMAIN}
+    WORKSPACE: /home/${PROD_USERNAME}/cotami-admin
+  before_script:
+    - !reference [.ssh_setup, before_script]
+  script:
+    - !reference [.env_setup, script]
+    - !reference [.deployment_setup, script]
+  when: on_success
+  only:
+    - master
+
+clean_prod:
+  stage: clean_prod
+  image: kroniak/ssh-client
+  variables:
+    SERVER_IP: ${FRONTEND_PROD_IP}
+    SERVER_USERNAME: ${PROD_USERNAME}
+    SERVER_PORT: 22
+  before_script:
+    - !reference [.ssh_setup, before_script]
+  script:
+    - !reference [.unused_script, script]
+  when: on_success
+  only:
+    - master
